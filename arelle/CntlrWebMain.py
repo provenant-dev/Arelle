@@ -6,6 +6,7 @@ See COPYRIGHT.md for copyright information.
 '''
 from arelle.webserver.bottle import Bottle, request, response, static_file
 from arelle.Cntlr import LogFormatter
+import os, io, sys, time, threading, uuid, zipfile,json
 import os, io, sys, time, threading, uuid, zipfile
 from arelle import Version
 from arelle.FileSource import FileNamedStringIO
@@ -69,6 +70,7 @@ def startWebserver(_cntlr, options):
         app.route('/rest/xbrl/validation', GETorPOST, validation)
         app.route('/rest/xbrl/view', GETorPOST, validation)
         app.route('/rest/xbrl/open', GETorPOST, validation)
+        app.route('/rest/xbrl/convert', GETorPOST, convert)
         app.route('/rest/xbrl/close', GETorPOST, validation)
         app.route('/images/<imgFile>', GET, image)
         app.route('/rest/xbrl/diff', GET, diff)
@@ -368,6 +370,100 @@ def runOptionsAndGetResult(options, media, viewFile, sourceZipStream=None):
     else:
         result = htmlBody(tableRows(cntlr.logHandler.getLines(), header=_("Messages")))
     return result
+
+def convert(file=None):
+    """REST request to embedd ixbrl-viewer file into ixbrl file
+    Sets up CntrlCmdLine options for request, performed by runOptionsAndGetResult using CntlrCmdLine.run with get or post arguments.
+
+    :returns: html, xhtml, xml, json, text -- Return per media type argument and request arguments
+    """
+    errors = []
+    flavor = request.query.flavor or 'standard'
+    media = request.query.media or 'html'
+    requestPathParts = request.urlparts[2].split('/')
+    isValidation = 'validation' == requestPathParts[-1] or 'validation' == requestPathParts[-2]
+    view = request.query.view
+    viewArcrole = request.query.viewArcrole
+    # if request.method == 'POST':
+    #     mimeType = request.get_header("Content-Type")
+    #     if mimeType.startswith("multipart/form-data"):
+    #         _upload = request.files.get("upload")
+    #         if not _upload or not _upload.filename.endswith(".zip"):
+    #             errors.append(_("POST file upload must be a zip file"))
+    #             sourceZipStream = None
+    #         else:
+    #             sourceZipStream = _upload.file
+    #     elif mimeType not in ('application/zip', 'application/x-zip', 'application/x-zip-compressed', 'multipart/x-zip'):
+    #         errors.append(_("POST must provide a zip file, Content-Type '{0}' not recognized as a zip file.").format(mimeType))
+    #     sourceZipStream = request.body
+    # else:
+    #     sourceZipStream = None
+    if not view and not viewArcrole:
+        if requestPathParts[-1] in supportedViews:
+            view = requestPathParts[-1]
+    # if isValidation:
+    #     if view or viewArcrole:
+    #         errors.append(_("Only validation or one view can be specified in one requested."))
+    #     if media not in ('xml', 'xhtml', 'html', 'json', 'text', 'zip') and not (sourceZipStream and media == 'zip'):
+    #         errors.append(_("Media '{0}' is not supported for validation (please select xhtml, html, xml, json or text)").format(media))
+    # elif view or viewArcrole:
+    #     if media not in ('xml', 'xhtml', 'html', 'csv', 'xlsx', 'json'):
+    #         errors.append(_("Media '{0}' is not supported for view (please select xhtml, html, xml, csv, xlsx or json)").format(media))
+    # elif requestPathParts[-1] not in ("open", "close"):
+    #     errors.append(_("Neither validation nor view requested, nothing to do."))
+    
+    if (flavor not in ('standard', 'standard-except-formula', 'formula-compile-only', 'formula-compile-and-run')
+        and not flavor.startswith('edgar') and not flavor.startswith('sec')):
+        errors.append(_("Flavor '{0}' is not supported").format(flavor))
+    if view and view not in supportedViews:
+        errors.append(_("View '{0}' is not supported").format(view))
+    if errors:
+        errors.insert(0, _("URL: ") + (file or request.query.file or '(no file)'))
+        return errorReport(errors, media)
+    options = Options() # need named parameters to simulate options
+    isFormulaOnly = False
+    for key, value in request.query.items():        
+        print("section key {0} run arguments {1}".format(key, " ".join(value)))
+        if key == "file":
+            setattr(options, "entrypointFile", value)
+        elif key == "flavor":
+            if value.startswith("sec") or value.startswith("edgar"):
+                setattr(options, "validateEFM", True)
+            elif value == "formula-compile-only":
+                isFormulaOnly = True
+                setattr(options, "formulaAction", "validate")
+            elif value == "formula-compile-and-run":
+                isFormulaOnly = True
+                setattr(options, "formulaAction", "run")
+            elif value == "standard-except-formula":
+                setattr(options, "formulaAction", "none")
+        elif key in("media", "view", "viewArcrole"):
+            pass
+        elif key in validationOptions:
+            optionKey, optionValue = validationOptions[key]
+            setattr(options, optionKey, optionValue if optionValue is not None else value)
+        elif key in validationKeyVarName:
+            setattr(options, validationKeyVarName[key], value or True)
+        elif not value: # convert plain str parameter present to True parameter
+            setattr(options, key, True)
+        else:
+            setattr(options, key, value)
+    if file:
+        setattr(options, "entrypointFile", file.replace(';','/'))
+    requestPathParts = set(request.urlparts[2].split('/'))
+    viewFile = None
+    if isValidation:
+        if not isFormulaOnly:
+            setattr(options, "validate", True)
+    elif view:
+        viewFile = FileNamedStringIO(media)
+        setattr(options, view + "File", viewFile)
+    elif viewArcrole:
+        viewFile = FileNamedStringIO(media)
+        setattr(options, "viewArcrole", viewArcrole)
+        setattr(options, "viewFile", viewFile)
+        
+    return runOptionsAndGetResult(options, media, viewFile, None)
 
 def diff():
     """Execute versioning diff request for *get* request to */rest/xbrl/diff*.
