@@ -3,12 +3,16 @@ PYTHON_VERSION=3.10.8
 
 .PHONY: build-base-image
 build-base-image:
-	cd docker \
-	&& docker build - < ubuntu.Dockerfile \
+	docker build --file docker/ubuntu.Dockerfile . \
 		--build-arg OPENSSL_VERSION=$(OPENSSL_VERSION) \
 		--build-arg PYTHON_VERSION=$(PYTHON_VERSION) \
-		-t provenant-dev/arelle:base
-		# -t ghcr.io/provenant-dev/arelle
+		--tag provenant-dev/arelle:base
+
+.PHONY: build-image
+build-image:
+	docker build . \
+		--tag provenant-dev/arelle \
+		--tag ghcr.io/provenant-dev/arelle
 
 .PHONY: push-tag
 push-tag:
